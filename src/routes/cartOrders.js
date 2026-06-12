@@ -1,10 +1,10 @@
 const router=require('express').Router();
 const {ok,fail}=require('../utils/respond');
 const ah=require('../utils/asyncHandler');
-const {requireAuth}=require('../middleware/auth');
+const {requireAuth, optionalAuth}=require('../middleware/auth');
 const {one,many,exec}=require('../utils/db');
 const payment=require('../services/paymentService');
-router.use(['/cart','/user','/checkout','/wallet','/payments/create-order','/payments/verify','/user/payments'], requireAuth);
+router.use(['/cart','/user','/checkout','/wallet','/user/payments'], requireAuth);
 
 async function safeMany(sql,params={}){try{return await many(sql,params);}catch(e){console.error('CART/ORDER QUERY FAILED:',e.message);return [];}}
 async function safeOne(sql,params={}){try{return await one(sql,params);}catch(e){console.error('CART/ORDER QUERY FAILED:',e.message);return null;}}
@@ -50,8 +50,11 @@ router.post('/user/orders',ah(async(req,res)=>{
   let verifiedPaymentTx = null;
   if (paymentType === 'ONLINE') {
     if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) return fail(res, 'Online payment verification data is missing.', 400);
-    verifiedPaymentTx = await safeOne('SELECT * FROM payment_transactions WHERE provider_order_id=:oid AND provider_payment_id=:pid AND status="SUCCESS" AND user_id=:uid', { oid: razorpayOrderId, pid: razorpayPaymentId, uid: req.user.id });
+    verifiedPaymentTx = await safeOne('SELECT * FROM payment_transactions WHERE provider_order_id=:oid AND provider_payment_id=:pid AND status="SUCCESS" AND (user_id=:uid OR user_id IS NULL)', { oid: razorpayOrderId, pid: razorpayPaymentId, uid: req.user.id });
     if (!verifiedPaymentTx) return fail(res, 'Payment is not verified yet. Please complete Razorpay verification before placing order.', 400);
+    if (!verifiedPaymentTx.user_id) {
+      await exec('UPDATE payment_transactions SET user_id=:uid, updated_at=NOW(6) WHERE id=:id', { uid: req.user.id, id: verifiedPaymentTx.id });
+    }
   }
   const paymentStatus = paymentType==='ONLINE' ? 'PAID' : 'PENDING';
   const r=await exec(`INSERT INTO orders(user_id,restaurant_id,slug,order_number,status,payment_type,payment_status,items_total,delivery_fee,platform_fee,discount,grand_total,delivery_address,delivery_city,delivery_state,delivery_country,delivery_zipcode,delivery_mobile,delivery_name,delivery_latitude,delivery_longitude,order_note,razorpay_order_id,razorpay_payment_id,razorpay_signature,created_at) VALUES(:uid,:rid,:slug,:orderNumber,'PLACED',:pt,:ps,:subtotal,:df,:pf,:discount,:total,:address,:city,:state,:country,:zipcode,:mobile,:name,:lat,:lng,:note,:razorpayOrderId,:razorpayPaymentId,:razorpaySignature,NOW())`,{uid:req.user.id,rid:req.body.restaurantId||req.body.restaurant_id||items[0]?.restaurantId||items[0]?.restaurant_id||null,slug,orderNumber,pt:paymentType,ps:paymentStatus,subtotal,df:deliveryFee,pf:platformFee,discount,total,address:addr.address||addr.addressLine1||req.body.addressLine||'',city:addr.city||req.body.city||'',state:addr.state||req.body.state||'',country:addr.country||req.body.country||'India',zipcode:addr.pincode||addr.zipcode||req.body.pincode||req.body.zipcode||'',mobile:addr.mobile||addr.phone||req.body.mobile||'',name:addr.name||req.user.name||'',lat:addr.latitude||req.body.userLatitude||req.body.user_latitude||null,lng:addr.longitude||req.body.userLongitude||req.body.user_longitude||null,note:req.body.deliveryInstruction||req.body.orderNote||req.body.order_note||'',razorpayOrderId,razorpayPaymentId,razorpaySignature});
@@ -68,8 +71,8 @@ router.get('/user/orders/:slug',ah(async(req,res)=>{const o=await safeOne('SELEC
 router.post('/user/orders/:slug/cancel',ah(async(req,res)=>{await exec('UPDATE orders SET status="CANCELLED", cancellation_reason=:reason, cancelled_at=NOW() WHERE (slug=:s OR id=:s OR order_number=:s) AND user_id=:uid AND status NOT IN ("DELIVERED","CANCELLED")',{s:req.params.slug,uid:req.user.id,reason:req.body.reason||'Cancelled by user'}); ok(res,null,'Order cancelled');}));
 router.post('/user/orders/:id/reorder',ah(async(req,res)=>ok(res,{sourceOrderId:req.params.id},'Reorder prepared')));
 router.get(['/user/orders/:slug/invoice.pdf','/user/orders/:slug/invoice'],(req,res)=>{res.type('application/pdf').send(Buffer.from('%PDF-1.4\n% Mr Breado invoice placeholder\n'));});
-router.post('/payments/create-order',ah(async(req,res)=>ok(res,await payment.createOrder({amount:req.body.amount||req.body.amountRupees||req.body.total||req.body.payableAmount,amountInPaise:req.body.amountInPaise||req.body.amount_in_paise,orderId:req.body.orderId||req.body.appOrderId,userId:req.user.id,restaurantId:req.body.restaurantId||req.body.restaurant_id||null,sellerId:req.body.sellerId||req.body.seller_id||null,currency:req.body.currency||'INR'}), 'Payment order created')));
-router.post('/payments/verify',ah(async(req,res)=>ok(res,await payment.verify(req.body, req.user),'Payment verified')));
+router.post('/payments/create-order', optionalAuth, ah(async(req,res)=>ok(res,await payment.createOrder({amount:req.body.amount||req.body.amountRupees||req.body.total||req.body.payableAmount,amountInPaise:req.body.amountInPaise||req.body.amount_in_paise,orderId:req.body.orderId||req.body.appOrderId,userId:req.user?.id||req.body.userId||req.body.user_id||null,restaurantId:req.body.restaurantId||req.body.restaurant_id||null,sellerId:req.body.sellerId||req.body.seller_id||null,currency:req.body.currency||'INR'}), 'Payment order created')));
+router.post('/payments/verify', optionalAuth, ah(async(req,res)=>ok(res,await payment.verify(req.body, req.user || {}),'Payment verified')));
 router.get('/user/payments',ah(async(req,res)=>ok(res,await safeMany('SELECT * FROM payment_transactions WHERE user_id=:uid ORDER BY id DESC',{uid:req.user.id}))));
 router.get('/wallet',ah(async(req,res)=>ok(res,{cashBalance:0,rewardPoints:0,rewardCashValue:0,dueAmount:0,referralCode:`MB-${req.user.id}`})));
 router.get('/wallet/transactions',ah(async(req,res)=>ok(res,await safeMany('SELECT * FROM wallet_transactions WHERE user_id=:uid ORDER BY id DESC LIMIT 100',{uid:req.user.id}))));
