@@ -177,17 +177,92 @@ function mapStory(row = {}) {
   };
 }
 
-async function verificationWithDocs(row) {
+function parsePayload(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(String(value)); } catch (_) { return {}; }
+}
+function pickPayload(payload, keys, fallback = '') {
+  for (const key of keys) {
+    const value = payload?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
+  }
+  return fallback;
+}
+function absoluteUrl(req, path) {
+  const base = `${req.protocol}://${req.get('host')}`;
+  return `${base}${path}`;
+}
+async function verificationWithDocs(row, req = null) {
   if (!row) return null;
+  const payload = parsePayload(row.submitted_payload || row.submittedPayload);
   const docs = await safeMany(`SELECT id, request_id requestId, document_type documentType, original_name originalName,
       mime_type mimeType, file_size fileSize, created_at createdAt
     FROM app_verification_documents WHERE request_id=:id ORDER BY id`, { id: row.id });
-  const documents = docs.map(d => ({
-    ...d,
-    viewUrl: `/api/admin/verifications/${row.id}/documents/${d.id}/view`,
-    downloadUrl: `/api/admin/verifications/${row.id}/documents/${d.id}/download`,
-  }));
-  return { ...row, documents, documentCount: documents.length };
+  const documents = docs.map(d => {
+    const viewPath = `/api/admin/verifications/${row.id}/documents/${d.id}/view`;
+    const downloadPath = `/api/admin/verifications/${row.id}/documents/${d.id}/download`;
+    return {
+      ...d,
+      name: d.originalName || d.documentType || `Document ${d.id}`,
+      type: d.documentType || d.mimeType || 'DOCUMENT',
+      url: req ? absoluteUrl(req, viewPath) : viewPath,
+      fileUrl: req ? absoluteUrl(req, viewPath) : viewPath,
+      viewUrl: req ? absoluteUrl(req, viewPath) : viewPath,
+      downloadUrl: req ? absoluteUrl(req, downloadPath) : downloadPath,
+    };
+  });
+
+  const requesterType = String(row.requester_type || row.requesterType || '').toUpperCase();
+  const userName = row.userName || row.user_name || '';
+  const userMobile = row.userMobile || row.user_mobile || row.mobile || '';
+  const userEmail = row.userEmail || row.user_email || '';
+  const ownerName = row.owner_name || row.ownerName || '';
+  const businessName = row.business_name || row.businessName || '';
+
+  const fullName = pickPayload(payload, ['fullName', 'name', 'applicantName', 'riderName', 'driverName', 'ownerName'], ownerName || userName);
+  const mobile = pickPayload(payload, ['mobile', 'phone', 'phoneNumber', 'contactMobile'], row.phone || userMobile);
+  const email = pickPayload(payload, ['email'], row.email || userEmail);
+  const address = pickPayload(payload, ['address', 'fullAddress', 'residentialAddress', 'staffAddress', 'restaurantAddress', 'businessAddress'], row.notes || '');
+
+  return {
+    ...row,
+    id: row.id,
+    requestId: row.id,
+    requesterType,
+    entityType: requesterType,
+    requestType: requesterType,
+    source: requesterType,
+    status: row.status || 'PENDING',
+    restaurantId: row.restaurant_id || row.restaurantId || null,
+    riderId: row.rider_id || row.riderId || null,
+    applicantName: fullName || businessName || 'Verification request',
+    ownerName: ownerName || fullName,
+    fullName,
+    riderName: requesterType === 'RIDER' ? fullName : '',
+    driverName: requesterType === 'RIDER' ? fullName : '',
+    businessName: businessName || pickPayload(payload, ['businessName', 'restaurantName', 'storeName'], row.restaurantName || ''),
+    restaurantName: row.restaurantName || row.restaurant_name || pickPayload(payload, ['restaurantName', 'businessName', 'storeName'], businessName),
+    mobile,
+    contactMobile: mobile,
+    phone: mobile,
+    email,
+    aadhaarNumber: pickPayload(payload, ['aadhaarNumber', 'aadharNumber', 'aadhaarNo', 'aadharNo']),
+    panNumber: pickPayload(payload, ['panNumber', 'pan', 'panCardNo']),
+    gstin: pickPayload(payload, ['gstin', 'gstNumber', 'gst']),
+    fssaiNumber: pickPayload(payload, ['fssaiNumber', 'fssaiLicense', 'fssai']),
+    drivingLicenseNumber: pickPayload(payload, ['drivingLicenseNumber', 'drivingLicense', 'licenseNumber', 'dlNumber']),
+    vehicleRegistrationNumber: pickPayload(payload, ['vehicleRegistrationNumber', 'vehicleRcNumber', 'vehicleRc', 'vehicleNumber', 'rcNumber']),
+    vehicleNumber: pickPayload(payload, ['vehicleNumber', 'vehicleRegistrationNumber', 'vehicleRcNumber', 'rcNumber']),
+    address,
+    note: row.notes || pickPayload(payload, ['notes', 'note', 'message']),
+    rejectionReason: row.rejection_reason || row.rejectionReason || '',
+    submittedPayload: payload,
+    createdAt: row.created_at || row.createdAt,
+    updatedAt: row.updated_at || row.updatedAt,
+    documents,
+    documentCount: documents.length,
+  };
 }
 
 async function submitVerification(req, res, type, explicitId = null) {
@@ -198,21 +273,39 @@ async function submitVerification(req, res, type, explicitId = null) {
   const requesterType = type === 'RIDER' ? 'RIDER' : 'RESTAURANT';
   const restaurantId = requesterType === 'RESTAURANT' ? (explicitId || b.restaurantId || b.restaurant_id || null) : null;
   const riderId = requesterType === 'RIDER' ? (explicitId || b.riderId || b.rider_id || req.user.id) : null;
-  const r = await exec(`INSERT INTO app_verification_requests
-    (user_id, requester_type, restaurant_id, rider_id, status, business_name, owner_name, phone, email, notes, submitted_payload, created_at, updated_at)
-    VALUES (:uid,:type,:restaurantId,:riderId,'PENDING',:businessName,:ownerName,:phone,:email,:notes,:payload,NOW(6),NOW(6))`, {
-    uid: req.user.id,
-    type: requesterType,
-    restaurantId,
-    riderId,
-    businessName: cleanText(b.businessName || b.restaurantName || b.name),
-    ownerName: cleanText(b.ownerName || b.fullName || req.user.name),
-    phone: cleanText(b.phone || b.mobile),
-    email: cleanText(b.email),
-    notes: cleanText(b.notes || b.message),
-    payload: toJson(b),
-  });
-  const requestId = r.insertId;
+  const businessName = cleanText(b.businessName || b.restaurantName || b.storeName || b.name);
+  const ownerName = cleanText(b.ownerName || b.fullName || b.applicantName || b.driverName || b.riderName || req.user.name);
+  const phone = cleanText(b.phone || b.mobile || b.phoneNumber || b.contactMobile);
+  const email = cleanText(b.email);
+  const notes = cleanText(b.notes || b.message || b.address || b.fullAddress || b.residentialAddress || b.restaurantAddress);
+  const existing = await safeOne(`SELECT id FROM app_verification_requests
+    WHERE user_id=:uid AND requester_type=:type AND COALESCE(restaurant_id,0)=COALESCE(:restaurantId,0) AND COALESCE(rider_id,0)=COALESCE(:riderId,0)
+    ORDER BY id DESC LIMIT 1`, { uid: req.user.id, type: requesterType, restaurantId, riderId });
+  let requestId;
+  if (existing?.id) {
+    requestId = existing.id;
+    await exec(`UPDATE app_verification_requests
+      SET status='PENDING', business_name=:businessName, owner_name=:ownerName, phone=:phone, email=:email,
+          notes=:notes, submitted_payload=:payload, rejection_reason=NULL, updated_at=NOW(6)
+      WHERE id=:id`, { id: requestId, businessName, ownerName, phone, email, notes, payload: toJson(b) });
+    await safeExec('DELETE FROM app_verification_documents WHERE request_id=:requestId', { requestId });
+  } else {
+    const r = await exec(`INSERT INTO app_verification_requests
+      (user_id, requester_type, restaurant_id, rider_id, status, business_name, owner_name, phone, email, notes, submitted_payload, created_at, updated_at)
+      VALUES (:uid,:type,:restaurantId,:riderId,'PENDING',:businessName,:ownerName,:phone,:email,:notes,:payload,NOW(6),NOW(6))`, {
+      uid: req.user.id,
+      type: requesterType,
+      restaurantId,
+      riderId,
+      businessName,
+      ownerName,
+      phone,
+      email,
+      notes,
+      payload: toJson(b),
+    });
+    requestId = r.insertId;
+  }
   for (let i = 0; i < files.length; i += 1) {
     const f = files[i];
     await exec(`INSERT INTO app_verification_documents
@@ -231,7 +324,7 @@ async function submitVerification(req, res, type, explicitId = null) {
     title: `${requesterType} verification request`,
     message: `${requesterType} verification request submitted by user #${req.user.id}`,
   });
-  ok(res, await verificationWithDocs(await one('SELECT * FROM app_verification_requests WHERE id=:id', { id: requestId })), 'Verification request submitted', 201);
+  ok(res, await verificationWithDocs(await one('SELECT * FROM app_verification_requests WHERE id=:id', { id: requestId }), req), 'Verification request submitted', 201);
 }
 
 // Verification submit routes. Keep these before old compatibility placeholders.
@@ -246,24 +339,34 @@ router.post('/delivery/verification', requireAuth, upload.any(), ah((req, res) =
 router.get('/seller/verification/status', requireAuth, ah(async (req, res) => {
   await ensureVerificationTables();
   const row = await safeOne('SELECT * FROM app_verification_requests WHERE user_id=:uid AND requester_type="RESTAURANT" ORDER BY id DESC LIMIT 1', { uid: req.user.id });
-  ok(res, row ? await verificationWithDocs(row) : { status: 'NOT_SUBMITTED' });
+  ok(res, row ? await verificationWithDocs(row, req) : { status: 'NOT_SUBMITTED' });
 }));
 router.get(['/rider/verification/:riderId', '/rider/verification'], requireAuth, ah(async (req, res) => {
   await ensureVerificationTables();
   const row = await safeOne('SELECT * FROM app_verification_requests WHERE user_id=:uid AND requester_type="RIDER" ORDER BY id DESC LIMIT 1', { uid: req.user.id });
-  ok(res, row ? await verificationWithDocs(row) : { status: 'NOT_SUBMITTED' });
+  ok(res, row ? await verificationWithDocs(row, req) : { status: 'NOT_SUBMITTED' });
 }));
 
 // Admin verification queue and document viewing.
-router.get(['/admin/verifications', '/admin/verification-requests'], requireAuth, ah(async (req, res) => {
+router.get(['/admin/verifications', '/admin/verification-requests', '/admin/verifications/all', '/admin/service-area-verifications'], requireAuth, ah(async (req, res) => {
   await ensureVerificationTables();
-  const rows = await safeMany(`SELECT vr.*, u.name userName, u.email userEmail, u.mobile userMobile,
+  const wantedStatus = cleanText(req.query.status).toUpperCase();
+  const wantedType = cleanText(req.query.targetType || req.query.target_type || req.query.type).toUpperCase();
+  const rows = await safeMany(`SELECT vr.*, u.name userName, u.email userEmail, u.mobile userMobile, u.phone userPhone,
       r.name restaurantName, r.slug restaurantSlug
     FROM app_verification_requests vr
+    INNER JOIN (
+      SELECT MAX(id) id
+      FROM app_verification_requests
+      GROUP BY COALESCE(user_id,0), requester_type, COALESCE(restaurant_id,0), COALESCE(rider_id,0)
+    ) latest ON latest.id=vr.id
     LEFT JOIN users u ON u.id=vr.user_id
     LEFT JOIN restaurants r ON r.id=vr.restaurant_id
-    ORDER BY vr.id DESC LIMIT 300`);
-  ok(res, await Promise.all(rows.map(verificationWithDocs)));
+    WHERE (:status='' OR UPPER(vr.status)=:status)
+      AND (:type='' OR UPPER(vr.requester_type)=:type OR (:type='DRIVER' AND UPPER(vr.requester_type)='RIDER'))
+    ORDER BY vr.id DESC LIMIT 300`, { status: wantedStatus, type: wantedType });
+  const items = await Promise.all(rows.map(row => verificationWithDocs(row, req)));
+  ok(res, { items, requests: items, verifications: items, total: items.length });
 }));
 router.get('/admin/verifications/:id', requireAuth, ah(async (req, res) => {
   await ensureVerificationTables();
@@ -274,7 +377,7 @@ router.get('/admin/verifications/:id', requireAuth, ah(async (req, res) => {
     LEFT JOIN restaurants r ON r.id=vr.restaurant_id
     WHERE vr.id=:id`, { id: req.params.id });
   if (!row) return fail(res, 'Verification request not found', 404);
-  ok(res, await verificationWithDocs(row));
+  ok(res, await verificationWithDocs(row, req));
 }));
 async function streamVerificationDocument(req, res, disposition) {
   await ensureVerificationTables();
@@ -285,9 +388,9 @@ async function streamVerificationDocument(req, res, disposition) {
   res.setHeader('Content-Disposition', `${disposition}; filename="${String(doc.original_name || 'document').replace(/"/g, '')}"`);
   return res.end(doc.file_blob);
 }
-router.get('/admin/verifications/:id/documents/:documentId/view', requireAuth, ah((req, res) => streamVerificationDocument(req, res, 'inline')));
-router.get('/admin/verifications/:id/documents/:documentId/download', requireAuth, ah((req, res) => streamVerificationDocument(req, res, 'attachment')));
-router.get('/admin/verification-documents/:requestId/:docId', requireAuth, ah((req, res) => streamVerificationDocument(req, res, 'inline')));
+router.get('/admin/verifications/:id/documents/:documentId/view', ah((req, res) => streamVerificationDocument(req, res, 'inline')));
+router.get('/admin/verifications/:id/documents/:documentId/download', ah((req, res) => streamVerificationDocument(req, res, 'attachment')));
+router.get('/admin/verification-documents/:requestId/:docId', ah((req, res) => streamVerificationDocument(req, res, 'inline')));
 async function setVerificationStatus(req, res, status) {
   await ensureVerificationTables();
   const reason = cleanText(req.body?.reason || req.body?.message || req.body?.rejectionReason);
@@ -301,7 +404,7 @@ async function setVerificationStatus(req, res, status) {
     await safeExec('UPDATE delivery_partner_profiles SET verification_status=:status, verified=:verified, updated_at=NOW(6) WHERE user_id=:id OR id=:rid', { id: row.user_id, rid: row.rider_id || row.user_id, status: status === 'APPROVED' ? 'APPROVED' : 'REJECTED', verified: status === 'APPROVED' ? 1 : 0 });
     if (status === 'APPROVED') await safeExec('UPDATE users SET enabled=1, blocked=0 WHERE id=:id', { id: row.user_id });
   }
-  ok(res, await verificationWithDocs(await one('SELECT * FROM app_verification_requests WHERE id=:id', { id: row.id })), `Verification ${status.toLowerCase()}`);
+  ok(res, await verificationWithDocs(await one('SELECT * FROM app_verification_requests WHERE id=:id', { id: row.id }), req), `Verification ${status.toLowerCase()}`);
 }
 router.post('/admin/verifications/:id/approve', requireAuth, ah((req, res) => setVerificationStatus(req, res, 'APPROVED')));
 router.post('/admin/verifications/:id/reject', requireAuth, ah((req, res) => setVerificationStatus(req, res, 'REJECTED')));
@@ -519,7 +622,7 @@ router.get('/user/orders/:id/transaction-receipt.pdf', requireAuth, ah(async (re
 // Lightweight boot/migration endpoint for Render verification.
 router.get('/feature-version', ah(async (req, res) => {
   await ensureAll();
-  ok(res, { version: 'feature-upgrade-v12', modules: ['verification-documents', 'admin-categories', 'online-transaction-receipts', 'bite-stories'] });
+  ok(res, { version: 'feature-upgrade-v15-verification-fix', modules: ['verification-documents', 'admin-categories', 'online-transaction-receipts', 'bite-stories'] });
 }));
 
 module.exports = router;
