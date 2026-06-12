@@ -41,3 +41,6 @@ npm start
 ## Notes
 
 This backend preserves the route contract and implements production-ready foundations. Some admin/reporting endpoints intentionally return compatible empty/default datasets until real business data is created through the app. The database schema is intentionally simpler than the Spring JPA model but includes the entities required by the apps: users, restaurants, categories, brands, products, cart, addresses, orders, payments, offers, coupons, notifications, reviews, support tickets and live delivery locations.
+
+
+V10: payment create-order direct public route before auth routers.
