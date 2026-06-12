@@ -13,8 +13,20 @@ async function cartData(userId){const c=await getCart(userId); const items=await
 router.get('/cart',ah(async(req,res)=>ok(res,await cartData(req.user.id))));
 router.post('/cart/items',ah(async(req,res)=>{const cart=await getCart(req.user.id); const productId=req.body.productId||req.body.product_id||req.body.id; const qty=Number(req.body.quantity||1); const p=await safeOne('SELECT * FROM products WHERE id=:id',{id:productId}); if(!p) return fail(res,'Product not found',404); const old=await safeOne('SELECT * FROM cart_items WHERE cart_id=:cid AND product_id=:pid',{cid:cart.id,pid:p.id}); const price=p.discount_price||p.price||0; if(old) await exec('UPDATE cart_items SET quantity=quantity+:qty, updated_at=NOW() WHERE id=:id',{qty,id:old.id}); else await exec('INSERT INTO cart_items(cart_id,product_id,quantity,unit_price,customization_total,special_instruction,created_at) VALUES(:cid,:pid,:qty,:price,0,:note,NOW())',{cid:cart.id,pid:p.id,qty,price,note:req.body.specialInstruction||''}); ok(res,await cartData(req.user.id),'Item added');}));
 router.put('/cart/items/:id',ah(async(req,res)=>{await exec('UPDATE cart_items SET quantity=:q, updated_at=NOW() WHERE id=:id AND cart_id IN (SELECT id FROM carts WHERE user_id=:uid)',{q:Number(req.body.quantity||1),id:req.params.id,uid:req.user.id}); ok(res,await cartData(req.user.id),'Cart updated');}));
-router.delete('/cart/items/:id',ah(async(req,res)=>{await exec('DELETE FROM cart_items WHERE id=:id AND cart_id IN (SELECT id FROM carts WHERE user_id=:uid)',{id:req.params.id,uid:req.user.id}); ok(res,await cartData(req.user.id),'Item removed');}));
-router.delete(['/cart','/cart/clear'],ah(async(req,res)=>{const c=await getCart(req.user.id); await exec('DELETE FROM cart_items WHERE cart_id=:id',{id:c.id}); ok(res,await cartData(req.user.id),'Cart cleared');}));
+router.delete('/cart/items/:id',ah(async(req,res)=>{
+  const item=await safeOne('SELECT id FROM cart_items WHERE id=:id AND cart_id IN (SELECT id FROM carts WHERE user_id=:uid)',{id:req.params.id,uid:req.user.id});
+  if(item?.id){
+    await exec('DELETE FROM cart_item_customizations WHERE cart_item_id=:id',{id:item.id});
+    await exec('DELETE FROM cart_items WHERE id=:id',{id:item.id});
+  }
+  ok(res,await cartData(req.user.id),'Item removed');
+}));
+router.delete(['/cart','/cart/clear'],ah(async(req,res)=>{
+  const c=await getCart(req.user.id);
+  await exec('DELETE FROM cart_item_customizations WHERE cart_item_id IN (SELECT id FROM cart_items WHERE cart_id=:id)',{id:c.id});
+  await exec('DELETE FROM cart_items WHERE cart_id=:id',{id:c.id});
+  ok(res,await cartData(req.user.id),'Cart cleared');
+}));
 
 router.get('/user/addresses',ah(async(req,res)=>ok(res,await safeMany('SELECT *, default_address isDefault, zipcode pincode, mobile phone, address addressLine1 FROM addresses WHERE user_id=:uid AND COALESCE(deleted,0)=0 ORDER BY default_address DESC,id DESC',{uid:req.user.id}))));
 router.post('/user/addresses',ah(async(req,res)=>{const b=req.body; const r=await exec(`INSERT INTO addresses(user_id,type,name,mobile,address,landmark,city,state,country,zipcode,latitude,longitude,default_address,deleted,created_at) VALUES(:uid,:type,:name,:phone,:address,:landmark,:city,:state,:country,:zipcode,:lat,:lng,:def,0,NOW())`,{uid:req.user.id,type:b.type||b.label||'HOME',name:b.name||req.user.name||'User',phone:b.phone||b.mobile||'',address:b.address||b.addressLine1||b.line1||'',landmark:b.addressLine2||b.line2||b.landmark||'',city:b.city||'',state:b.state||'',country:b.country||'India',zipcode:b.pincode||b.zipcode||'',lat:b.latitude||0,lng:b.longitude||0,def:!!b.isDefault}); ok(res,await one('SELECT * FROM addresses WHERE id=:id',{id:r.insertId}),'Address saved',201);}));
