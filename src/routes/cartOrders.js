@@ -1,0 +1,79 @@
+const router=require('express').Router();
+const {ok,fail}=require('../utils/respond');
+const ah=require('../utils/asyncHandler');
+const {requireAuth, optionalAuth}=require('../middleware/auth');
+const {one,many,exec}=require('../utils/db');
+const payment=require('../services/paymentService');
+router.use(['/cart','/user','/checkout','/wallet','/user/payments'], requireAuth);
+
+async function safeMany(sql,params={}){try{return await many(sql,params);}catch(e){console.error('CART/ORDER QUERY FAILED:',e.message);return [];}}
+async function safeOne(sql,params={}){try{return await one(sql,params);}catch(e){console.error('CART/ORDER QUERY FAILED:',e.message);return null;}}
+async function getCart(userId){let c=await safeOne('SELECT * FROM carts WHERE user_id=:userId',{userId}); if(!c){const r=await exec('INSERT INTO carts(user_id,created_at) VALUES(:userId,NOW())',{userId}); c=await one('SELECT * FROM carts WHERE id=:id',{id:r.insertId});} return c;}
+async function cartData(userId){const c=await getCart(userId); const items=await safeMany(`SELECT ci.*, COALESCE(NULLIF(p.name,''),p.title) name, COALESCE(p.image_url,p.image) imageUrl, p.slug, p.restaurant_id restaurantId, p.price, p.discount_price discountPrice FROM cart_items ci LEFT JOIN products p ON p.id=ci.product_id WHERE ci.cart_id=:cid`,{cid:c.id}); const subtotal=items.reduce((s,i)=>s+Number(i.unit_price||i.discountPrice||i.price||0)*Number(i.quantity||1),0); return {id:c.id,items,subtotal,total:subtotal};}
+router.get('/cart',ah(async(req,res)=>ok(res,await cartData(req.user.id))));
+router.post('/cart/items',ah(async(req,res)=>{const cart=await getCart(req.user.id); const productId=req.body.productId||req.body.product_id||req.body.id; const qty=Number(req.body.quantity||1); const p=await safeOne('SELECT * FROM products WHERE id=:id',{id:productId}); if(!p) return fail(res,'Product not found',404); const old=await safeOne('SELECT * FROM cart_items WHERE cart_id=:cid AND product_id=:pid',{cid:cart.id,pid:p.id}); const price=p.discount_price||p.price||0; if(old) await exec('UPDATE cart_items SET quantity=quantity+:qty, updated_at=NOW() WHERE id=:id',{qty,id:old.id}); else await exec('INSERT INTO cart_items(cart_id,product_id,quantity,unit_price,customization_total,special_instruction,created_at) VALUES(:cid,:pid,:qty,:price,0,:note,NOW())',{cid:cart.id,pid:p.id,qty,price,note:req.body.specialInstruction||''}); ok(res,await cartData(req.user.id),'Item added');}));
+router.put('/cart/items/:id',ah(async(req,res)=>{await exec('UPDATE cart_items SET quantity=:q, updated_at=NOW() WHERE id=:id AND cart_id IN (SELECT id FROM carts WHERE user_id=:uid)',{q:Number(req.body.quantity||1),id:req.params.id,uid:req.user.id}); ok(res,await cartData(req.user.id),'Cart updated');}));
+router.delete('/cart/items/:id',ah(async(req,res)=>{
+  const item=await safeOne('SELECT id FROM cart_items WHERE id=:id AND cart_id IN (SELECT id FROM carts WHERE user_id=:uid)',{id:req.params.id,uid:req.user.id});
+  if(item?.id){
+    await exec('DELETE FROM cart_item_customizations WHERE cart_item_id=:id',{id:item.id});
+    await exec('DELETE FROM cart_items WHERE id=:id',{id:item.id});
+  }
+  ok(res,await cartData(req.user.id),'Item removed');
+}));
+router.delete(['/cart','/cart/clear'],ah(async(req,res)=>{
+  const c=await getCart(req.user.id);
+  await exec('DELETE FROM cart_item_customizations WHERE cart_item_id IN (SELECT id FROM cart_items WHERE cart_id=:id)',{id:c.id});
+  await exec('DELETE FROM cart_items WHERE cart_id=:id',{id:c.id});
+  ok(res,await cartData(req.user.id),'Cart cleared');
+}));
+
+router.get('/user/addresses',ah(async(req,res)=>ok(res,await safeMany('SELECT *, default_address isDefault, zipcode pincode, mobile phone, address addressLine1 FROM addresses WHERE user_id=:uid AND COALESCE(deleted,0)=0 ORDER BY default_address DESC,id DESC',{uid:req.user.id}))));
+router.post('/user/addresses',ah(async(req,res)=>{const b=req.body; const r=await exec(`INSERT INTO addresses(user_id,type,name,mobile,address,landmark,city,state,country,zipcode,latitude,longitude,default_address,deleted,created_at) VALUES(:uid,:type,:name,:phone,:address,:landmark,:city,:state,:country,:zipcode,:lat,:lng,:def,0,NOW())`,{uid:req.user.id,type:b.type||b.label||'HOME',name:b.name||req.user.name||'User',phone:b.phone||b.mobile||'',address:b.address||b.addressLine1||b.line1||'',landmark:b.addressLine2||b.line2||b.landmark||'',city:b.city||'',state:b.state||'',country:b.country||'India',zipcode:b.pincode||b.zipcode||'',lat:b.latitude||0,lng:b.longitude||0,def:!!b.isDefault}); ok(res,await one('SELECT * FROM addresses WHERE id=:id',{id:r.insertId}),'Address saved',201);}));
+router.put('/user/addresses/:id',ah(async(req,res)=>{const b=req.body; await exec('UPDATE addresses SET type=COALESCE(:type,type), name=COALESCE(:name,name), mobile=COALESCE(:phone,mobile), address=COALESCE(:address,address), landmark=COALESCE(:landmark,landmark), city=COALESCE(:city,city), state=COALESCE(:state,state), zipcode=COALESCE(:zipcode,zipcode), latitude=COALESCE(:lat,latitude), longitude=COALESCE(:lng,longitude), updated_at=NOW() WHERE id=:id AND user_id=:uid',{id:req.params.id,uid:req.user.id,type:b.type||b.label||null,name:b.name||null,phone:b.phone||b.mobile||null,address:b.address||b.addressLine1||b.line1||null,landmark:b.addressLine2||b.line2||b.landmark||null,city:b.city||null,state:b.state||null,zipcode:b.pincode||b.zipcode||null,lat:b.latitude||null,lng:b.longitude||null}); ok(res,await one('SELECT * FROM addresses WHERE id=:id',{id:req.params.id}),'Address updated');}));
+router.delete('/user/addresses/:id',ah(async(req,res)=>{await exec('UPDATE addresses SET deleted=1 WHERE id=:id AND user_id=:uid',{id:req.params.id,uid:req.user.id}); ok(res,null,'Address deleted');}));
+router.all('/user/addresses/:id/default',ah(async(req,res)=>{await exec('UPDATE addresses SET default_address=0 WHERE user_id=:uid',{uid:req.user.id}); await exec('UPDATE addresses SET default_address=1 WHERE id=:id AND user_id=:uid',{id:req.params.id,uid:req.user.id}); ok(res,null,'Default address updated');}));
+router.post('/checkout/summary',ah(async(req,res)=>{const cart=await cartData(req.user.id); const deliveryFee=Number(req.body.deliveryFee||30), platformFee=Number(req.body.platformFee||5), discount=Number(req.body.discount||0); ok(res,{...cart,deliveryFee,platformFee,discount,total:Math.max(cart.subtotal+deliveryFee+platformFee-discount,0),payableAmount:Math.max(cart.subtotal+deliveryFee+platformFee-discount,0)});}));
+router.post('/user/orders',ah(async(req,res)=>{
+  const cart=await cartData(req.user.id);
+  const items=req.body.items||cart.items;
+  if(!items.length) return fail(res,'Cart is empty',400);
+  const paymentType=(req.body.paymentType||req.body.payment_type||req.body.paymentMethod||'COD').toString().toUpperCase();
+  const razorpayOrderId=req.body.razorpay_order_id||req.body.razorpayOrderId||req.body.providerOrderId||null;
+  const razorpayPaymentId=req.body.razorpay_payment_id||req.body.razorpayPaymentId||req.body.providerPaymentId||null;
+  const razorpaySignature=req.body.razorpay_signature||req.body.razorpaySignature||req.body.providerSignature||null;
+  const subtotal=items.reduce((s,i)=>s+Number(i.unit_price||i.price||i.unitPrice||0)*Number(i.quantity||1),0) || cart.subtotal;
+  const slug='ORD-'+Date.now();
+  const orderNumber=slug;
+  const deliveryFee=Number(req.body.deliveryFee||req.body.delivery_fee||30), platformFee=Number(req.body.platformFee||req.body.platform_fee||5), discount=Number(req.body.discount||0), total=Math.max(subtotal+deliveryFee+platformFee-discount,0);
+  const addr=req.body.address||{};
+  let verifiedPaymentTx = null;
+  if (paymentType === 'ONLINE') {
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) return fail(res, 'Online payment verification data is missing.', 400);
+    verifiedPaymentTx = await safeOne('SELECT * FROM payment_transactions WHERE provider_order_id=:oid AND provider_payment_id=:pid AND status="SUCCESS" AND (user_id=:uid OR user_id IS NULL)', { oid: razorpayOrderId, pid: razorpayPaymentId, uid: req.user.id });
+    if (!verifiedPaymentTx) return fail(res, 'Payment is not verified yet. Please complete Razorpay verification before placing order.', 400);
+    if (!verifiedPaymentTx.user_id) {
+      await exec('UPDATE payment_transactions SET user_id=:uid, updated_at=NOW(6) WHERE id=:id', { uid: req.user.id, id: verifiedPaymentTx.id });
+    }
+  }
+  const paymentStatus = paymentType==='ONLINE' ? 'PAID' : 'PENDING';
+  const r=await exec(`INSERT INTO orders(user_id,restaurant_id,slug,order_number,status,payment_type,payment_status,items_total,delivery_fee,platform_fee,discount,grand_total,delivery_address,delivery_city,delivery_state,delivery_country,delivery_zipcode,delivery_mobile,delivery_name,delivery_latitude,delivery_longitude,order_note,razorpay_order_id,razorpay_payment_id,razorpay_signature,created_at) VALUES(:uid,:rid,:slug,:orderNumber,'PLACED',:pt,:ps,:subtotal,:df,:pf,:discount,:total,:address,:city,:state,:country,:zipcode,:mobile,:name,:lat,:lng,:note,:razorpayOrderId,:razorpayPaymentId,:razorpaySignature,NOW())`,{uid:req.user.id,rid:req.body.restaurantId||req.body.restaurant_id||items[0]?.restaurantId||items[0]?.restaurant_id||null,slug,orderNumber,pt:paymentType,ps:paymentStatus,subtotal,df:deliveryFee,pf:platformFee,discount,total,address:addr.address||addr.addressLine1||req.body.addressLine||'',city:addr.city||req.body.city||'',state:addr.state||req.body.state||'',country:addr.country||req.body.country||'India',zipcode:addr.pincode||addr.zipcode||req.body.pincode||req.body.zipcode||'',mobile:addr.mobile||addr.phone||req.body.mobile||'',name:addr.name||req.user.name||'',lat:addr.latitude||req.body.userLatitude||req.body.user_latitude||null,lng:addr.longitude||req.body.userLongitude||req.body.user_longitude||null,note:req.body.deliveryInstruction||req.body.orderNote||req.body.order_note||'',razorpayOrderId,razorpayPaymentId,razorpaySignature});
+  for(const i of items){await exec('INSERT INTO order_items(order_id,product_id,title,quantity,unit_price,total_price,customization_total,created_at) VALUES(:oid,:pid,:name,:qty,:price,:total,0,NOW())',{oid:r.insertId,pid:i.product_id||i.productId||null,name:i.name||i.title||'Item',qty:i.quantity||1,price:i.unit_price||i.price||i.unitPrice||0,total:Number(i.unit_price||i.price||i.unitPrice||0)*Number(i.quantity||1)});}
+  if(paymentType==='ONLINE' && razorpayOrderId){
+    await exec('UPDATE payment_transactions SET order_id=:orderId, status=CASE WHEN status="SUCCESS" THEN "SUCCESS" ELSE status END WHERE provider_order_id=:providerOrderId',{orderId:r.insertId,providerOrderId:razorpayOrderId});
+  }
+  await exec('DELETE FROM cart_item_customizations WHERE cart_item_id IN (SELECT id FROM cart_items WHERE cart_id=:cartId)',{cartId:cart.id});
+  await exec('DELETE FROM cart_items WHERE cart_id=:cartId',{cartId:cart.id});
+  ok(res,await one('SELECT *, grand_total total FROM orders WHERE id=:id',{id:r.insertId}),'Order placed',201);
+}));
+router.get('/user/orders',ah(async(req,res)=>ok(res,await safeMany('SELECT *, grand_total total FROM orders WHERE user_id=:uid ORDER BY id DESC',{uid:req.user.id}))));
+router.get('/user/orders/:slug',ah(async(req,res)=>{const o=await safeOne('SELECT *, grand_total total FROM orders WHERE (slug=:s OR id=:s OR order_number=:s) AND user_id=:uid',{s:req.params.slug,uid:req.user.id}); if(!o) return fail(res,'Order not found',404); const items=await safeMany('SELECT * FROM order_items WHERE order_id=:id',{id:o.id}); ok(res,{...o,items});}));
+router.post('/user/orders/:slug/cancel',ah(async(req,res)=>{await exec('UPDATE orders SET status="CANCELLED", cancellation_reason=:reason, cancelled_at=NOW() WHERE (slug=:s OR id=:s OR order_number=:s) AND user_id=:uid AND status NOT IN ("DELIVERED","CANCELLED")',{s:req.params.slug,uid:req.user.id,reason:req.body.reason||'Cancelled by user'}); ok(res,null,'Order cancelled');}));
+router.post('/user/orders/:id/reorder',ah(async(req,res)=>ok(res,{sourceOrderId:req.params.id},'Reorder prepared')));
+router.get(['/user/orders/:slug/invoice.pdf','/user/orders/:slug/invoice'],(req,res)=>{res.type('application/pdf').send(Buffer.from('%PDF-1.4\n% Mr Breado invoice placeholder\n'));});
+router.post('/payments/create-order', optionalAuth, ah(async(req,res)=>ok(res,await payment.createOrder({amount:req.body.amount||req.body.amountRupees||req.body.total||req.body.payableAmount,amountInPaise:req.body.amountInPaise||req.body.amount_in_paise,orderId:req.body.orderId||req.body.appOrderId,userId:req.user?.id||req.body.userId||req.body.user_id||null,restaurantId:req.body.restaurantId||req.body.restaurant_id||null,sellerId:req.body.sellerId||req.body.seller_id||null,currency:req.body.currency||'INR'}), 'Payment order created')));
+router.post('/payments/verify', optionalAuth, ah(async(req,res)=>ok(res,await payment.verify(req.body, req.user || {}),'Payment verified')));
+router.get('/user/payments',ah(async(req,res)=>ok(res,await safeMany('SELECT * FROM payment_transactions WHERE user_id=:uid ORDER BY id DESC',{uid:req.user.id}))));
+router.get('/wallet',ah(async(req,res)=>ok(res,{cashBalance:0,rewardPoints:0,rewardCashValue:0,dueAmount:0,referralCode:`MB-${req.user.id}`})));
+router.get('/wallet/transactions',ah(async(req,res)=>ok(res,await safeMany('SELECT * FROM wallet_transactions WHERE user_id=:uid ORDER BY id DESC LIMIT 100',{uid:req.user.id}))));
+module.exports=router;
