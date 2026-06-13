@@ -62,18 +62,32 @@ async function register(body){
   const hash=await bcrypt.hash(body.password||'123456',10);
   const r=await exec('INSERT INTO users(name,email,mobile,phone_number,password,role,enabled,blocked,deleted,country,iso2,loyalty_points,total_orders,total_reviews,wallet_balance,email_change_used,created_at) VALUES(:name,:email,:mobile,:mobile,:hash,:role,1,0,0,:country,:iso2,0,0,0,0,0,NOW())',{name,email,mobile,hash,role,country:body.country||'India',iso2:body.iso2||'IN'});
   const u=await one('SELECT * FROM users WHERE id=:id',{id:r.insertId});
-  return { token:token(u), user:publicUser(u) };
+  const jwtToken = token(u); return { token:jwtToken, accessToken:jwtToken, access_token:jwtToken, jwt:jwtToken, user:publicUser(u) };
 }
 async function login(body){
-  const ident=body.emailOrMobile||body.email||body.mobile||body.phone||body.phoneNumber;
+  const ident=body.emailOrMobile||body.email_or_mobile||body.identifier||body.username||body.email||body.mobile||body.phone||body.phoneNumber;
   const password=body.password;
-  const u=await one('SELECT * FROM users WHERE email=:ident OR mobile=:ident OR phone_number=:ident',{ident});
+  let u=await one('SELECT * FROM users WHERE email=:ident OR mobile=:ident OR phone_number=:ident',{ident});
+
+  // Production-safe bootstrap: if the database has no ADMIN account yet, allow the first
+  // admin login attempt to create the admin account. This avoids the seller/admin app
+  // getting stuck with "Authentication required" when the legacy Spring seed user is missing.
+  if(!u && String(ident||'').trim().toLowerCase()==='admin@admin.com') {
+    const adminCountRow = await one("SELECT COUNT(*) AS total FROM users WHERE UPPER(role)='ADMIN' AND COALESCE(deleted,0)=0",{});
+    const adminCount = Number(adminCountRow?.total || 0);
+    if(adminCount === 0 && String(password||'').trim().length >= 4) {
+      const hash = await bcrypt.hash(password,10);
+      const r = await exec("INSERT INTO users(name,email,mobile,phone_number,password,password_hash,role,enabled,blocked,deleted,country,iso2,loyalty_points,total_orders,total_reviews,wallet_balance,email_change_used,created_at) VALUES('Mr Breado Admin','admin@admin.com','9999999999','9999999999',:hash,:hash,'ADMIN',1,0,0,'India','IN',0,0,0,0,0,NOW())",{hash});
+      u = await one('SELECT * FROM users WHERE id=:id',{id:r.insertId});
+    }
+  }
+
   const stored = u?.password_hash || u?.password || '';
   if(!u || !(await bcrypt.compare(password||'', stored))) throw Object.assign(new Error('Invalid credentials'),{status:401});
   const enabled = bitBool(u.enabled, true);
   const blocked = bitBool(u.blocked, false);
   const deleted = bitBool(u.deleted, false);
   if(!enabled || blocked || deleted) throw Object.assign(new Error('Account is not active'),{status:403});
-  return { token:token(u), user:publicUser(u) };
+  const jwtToken = token(u); return { token:jwtToken, accessToken:jwtToken, access_token:jwtToken, jwt:jwtToken, user:publicUser(u) };
 }
 module.exports={register,login,publicUser,token,bitBool,normalizeRole,appRole};
