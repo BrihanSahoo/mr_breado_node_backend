@@ -20,6 +20,25 @@ function normalizeUser(payload = {}) {
   };
 }
 
+
+function isPublicPaymentRoute(req) {
+  const path = String(req.originalUrl || req.url || '').split('?')[0].toLowerCase();
+  const method = String(req.method || '').toUpperCase();
+  if (method !== 'POST') return false;
+  return path.endsWith('/payments/create-order') ||
+    path.endsWith('/payment/create-order') ||
+    path.endsWith('/razorpay/create-order') ||
+    path.endsWith('/payments/razorpay/create-order') ||
+    path.endsWith('/checkout/razorpay/create-order') ||
+    path.endsWith('/checkout/payment/create-order') ||
+    path.endsWith('/payments/verify') ||
+    path.endsWith('/payment/verify') ||
+    path.endsWith('/razorpay/verify') ||
+    path.endsWith('/payments/razorpay/verify') ||
+    path.endsWith('/checkout/razorpay/verify') ||
+    path.endsWith('/checkout/payment/verify');
+}
+
 function extractToken(req) {
   const authHeader = req.headers.authorization || req.headers.Authorization || '';
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
@@ -36,6 +55,14 @@ function extractToken(req) {
 
 function auth(optional = false) {
   return (req, res, next) => {
+    // Razorpay create-order/verify must stay compatible with the previously working v22 flow.
+    // Some legacy routers still wrap these URLs with requireAuth before the direct route is reached;
+    // this hard bypass prevents any stale/expired/missing token from blocking Razorpay checkout.
+    if (isPublicPaymentRoute(req)) {
+      req.user = null;
+      return next();
+    }
+
     const token = extractToken(req);
 
     if (!token) {

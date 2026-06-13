@@ -1,8 +1,8 @@
 const express=require('express'); const cors=require('cors'); const helmet=require('helmet'); const compression=require('compression'); const rateLimit=require('express-rate-limit'); const {apiPrefix,corsOrigin,limits}=require('./config/env'); const error=require('./middleware/error'); const payment=require('./services/paymentService'); const {ok}=require('./utils/respond'); const ah=require('./utils/asyncHandler');
 const app=express(); app.disable('x-powered-by'); app.use(helmet()); app.use(cors({origin:corsOrigin==='*'?true:corsOrigin,credentials:true})); app.use(compression()); app.use(express.json({limit:limits.json})); app.use(express.urlencoded({extended:true,limit:limits.json})); app.use(rateLimit({windowMs:60_000,limit:600,standardHeaders:true,legacyHeaders:false}));
-app.get('/',(req,res)=>res.json({success:true,message:'Mr Breado Node backend running',apiPrefix,version:'razorpay-auth-restore-v24'}));
-app.get(`${apiPrefix}/health`,(req,res)=>res.json({success:true,message:'OK',version:'razorpay-auth-restore-v24',time:new Date().toISOString()}));
-app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'razorpay-auth-restore-v24',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v23',realData:'enabled',commerce:'practical-admin-seller-payout-invoice-food-flow',razorpay:'unchanged'}));
+app.get('/',(req,res)=>res.json({success:true,message:'Mr Breado Node backend running',apiPrefix,version:'razorpay-auth-restore-v25'}));
+app.get(`${apiPrefix}/health`,(req,res)=>res.json({success:true,message:'OK',version:'razorpay-auth-restore-v25',time:new Date().toISOString()}));
+app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'razorpay-auth-restore-v25',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v23',realData:'enabled',commerce:'practical-admin-seller-payout-invoice-food-flow',razorpay:'unchanged'}));
 
 
 // DIRECT PUBLIC AUTH OVERRIDE: must stay before all routers and before any middleware that could require auth.
@@ -57,4 +57,4 @@ app.post([
 ], verifyPaymentHandler);
 
 const routers=[require('./routes/practicalAdminSellerV23'),require('./routes/realSpringFlowV22'),require('./routes/sellerAdminOrdersV19'),require('./routes/commerceV18'),require('./routes/commerceV17'),require('./routes/realDataV16'),require('./routes/featureUpgrade'),require('./routes/auth'),require('./routes/public'),require('./routes/cartOrders'),require('./routes/operations'),require('./routes/admin'),require('./routes/misc'),require('./routes/springCompatibility'),require('./routes/appEndpointCompatibility')]; routers.forEach(r=>app.use(apiPrefix,r));
-app.use((req,res)=>res.status(404).json({success:false,message:'Endpoint not found',path:req.originalUrl,version:'razorpay-auth-restore-v24'})); app.use(error); module.exports=app;
+app.use((req,res)=>res.status(404).json({success:false,message:'Endpoint not found',path:req.originalUrl,version:'razorpay-auth-restore-v25'})); app.use(error); module.exports=app;
