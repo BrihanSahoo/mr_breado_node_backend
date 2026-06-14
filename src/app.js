@@ -2,7 +2,7 @@ const express=require('express'); const cors=require('cors'); const helmet=requi
 const app=express(); app.disable('x-powered-by'); app.use(helmet()); app.use(cors({origin:corsOrigin==='*'?true:corsOrigin,credentials:true})); app.use(compression()); app.use(express.json({limit:limits.json})); app.use(express.urlencoded({extended:true,limit:limits.json})); app.use(rateLimit({windowMs:60_000,limit:600,standardHeaders:true,legacyHeaders:false}));
 app.get('/',(req,res)=>res.json({success:true,message:'Mr Breado Node backend running',apiPrefix,version:'v22-razorpay-locked-v26'}));
 app.get(`${apiPrefix}/health`,(req,res)=>res.json({success:true,message:'OK',version:'v22-razorpay-locked-v26',time:new Date().toISOString()}));
-app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'v32-verification-riders-native-spring-fix',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v32',realData:'enabled',commerce:'verification-riders-native-spring-fixed',razorpay:'v22-locked-unchanged'}));
+app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'v33-verification-food-admin-polish',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v33',realData:'enabled',commerce:'verification-riders-food-admin-polished',razorpay:'v22-locked-unchanged'}));
 
 
 
@@ -51,5 +51,5 @@ app.post([`${apiPrefix}/auth/register`, `${apiPrefix}/register`], ah(async (req,
   ok(res, result, 'Registered successfully', 201);
 }));
 
-const routers=[require('./routes/premiumReceiptsInvoicesV30'),require('./routes/orderReviewV30'),require('./routes/verificationRidersV32'),require('./routes/verificationAdminV31'),require('./routes/practicalAdminSellerV23'),require('./routes/realSpringFlowV22'),require('./routes/sellerAdminOrdersV19'),require('./routes/commerceV18'),require('./routes/commerceV17'),require('./routes/realDataV16'),require('./routes/featureUpgrade'),require('./routes/auth'),require('./routes/public'),require('./routes/cartOrders'),require('./routes/operations'),require('./routes/admin'),require('./routes/misc'),require('./routes/springCompatibility'),require('./routes/appEndpointCompatibility')]; routers.forEach(r=>app.use(apiPrefix,r));
+const routers=[require('./routes/verificationFoodAdminV33'),require('./routes/premiumReceiptsInvoicesV30'),require('./routes/orderReviewV30'),require('./routes/verificationRidersV32'),require('./routes/verificationAdminV31'),require('./routes/practicalAdminSellerV23'),require('./routes/realSpringFlowV22'),require('./routes/sellerAdminOrdersV19'),require('./routes/commerceV18'),require('./routes/commerceV17'),require('./routes/realDataV16'),require('./routes/featureUpgrade'),require('./routes/auth'),require('./routes/public'),require('./routes/cartOrders'),require('./routes/operations'),require('./routes/admin'),require('./routes/misc'),require('./routes/springCompatibility'),require('./routes/appEndpointCompatibility')]; routers.forEach(r=>app.use(apiPrefix,r));
 app.use((req,res)=>res.status(404).json({success:false,message:'Endpoint not found',path:req.originalUrl,version:'v22-razorpay-locked-v26'})); app.use(error); module.exports=app;
