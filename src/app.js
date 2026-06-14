@@ -2,7 +2,7 @@ const express=require('express'); const cors=require('cors'); const helmet=requi
 const app=express(); app.disable('x-powered-by'); app.use(helmet()); app.use(cors({origin:corsOrigin==='*'?true:corsOrigin,credentials:true})); app.use(compression()); app.use(express.json({limit:limits.json})); app.use(express.urlencoded({extended:true,limit:limits.json})); app.use(rateLimit({windowMs:60_000,limit:600,standardHeaders:true,legacyHeaders:false}));
 app.get('/',(req,res)=>res.json({success:true,message:'Mr Breado Node backend running',apiPrefix,version:'v22-razorpay-locked-v26'}));
 app.get(`${apiPrefix}/health`,(req,res)=>res.json({success:true,message:'OK',version:'v22-razorpay-locked-v26',time:new Date().toISOString()}));
-app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'v36-franchise-payout-food-approval-flow',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v36-franchise-payout-food-approval',realData:'enabled',commerce:'restaurant-rider-payout-ledgers-food-variant-pricing',razorpay:'v22-locked-unchanged'}));
+app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'v37-seller-restaurant-route-fix',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v37-seller-own-restaurant-fix',realData:'enabled',commerce:'restaurant-rider-payout-ledgers-food-variant-pricing',razorpay:'v22-locked-unchanged'}));
 
 
 

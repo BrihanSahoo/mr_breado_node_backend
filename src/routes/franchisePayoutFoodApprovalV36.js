@@ -4,6 +4,7 @@ const { ok, fail } = require('../utils/respond');
 const { pool } = require('../utils/db');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 6 } });
+const { requireAuth } = require('../middleware/auth');
 
 const cache = new Map();
 async function cols(t){ if(cache.has(t)) return cache.get(t); try{ const [r]=await pool.execute(`SHOW COLUMNS FROM \`${t}\``); const s=new Set(r.map(x=>x.Field)); cache.set(t,s); return s; }catch{ const s=new Set(); cache.set(t,s); return s; } }
@@ -62,6 +63,120 @@ async function ensure(){
 }
 ensure().catch(e=>console.error('[v36-init]',e.message));
 function normFranchise(x){ return { ...x, id:x.id, ownerName:x.owner_name, businessName:x.business_name, investmentBudget:n(x.investment_budget), preferredContactMethod:x.preferred_contact_method, adminNote:x.admin_note, approvedRestaurantId:x.approved_restaurant_id, createdAt:x.created_at, updatedAt:x.updated_at }; }
+
+// -----------------------------------------------------------------------------
+// V37 FIX: seller restaurant must be the logged-in seller's own restaurant.
+// Earlier practical admin routes intentionally expose Mr Breado admin data, but
+// they must never hijack normal seller dashboard/login. These routes are mounted
+// before v23 and therefore protect seller app from always opening Mr Breado HQ.
+// -----------------------------------------------------------------------------
+function slugifyName(value){ return String(value||'seller-restaurant').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,70) || 'seller-restaurant'; }
+function normalizeRestaurantRow(r){
+  if(!r) return null;
+  return {
+    ...r,
+    id: r.id,
+    sellerId: first(r.owner_id, r.seller_id),
+    ownerId: first(r.owner_id, r.seller_id),
+    name: first(r.name, r.title, 'Restaurant'),
+    title: first(r.title, r.name, 'Restaurant'),
+    address: first(r.address, r.business_address, ''),
+    imageUrl: first(r.image_url, r.image, r.logo, r.banner_url, ''),
+    logoUrl: first(r.logo, r.logo_url, r.image_url, ''),
+    rating: n(first(r.rating, r.avg_rating), 0),
+    isOpen: bool(first(r.is_open, r.open), true),
+    open: bool(first(r.is_open, r.open), true),
+    verified: String(first(r.verification_status, r.status, '')).toUpperCase() === 'VERIFIED' || bool(r.verified, false),
+    verificationStatus: String(first(r.verification_status, r.verificationStatus, r.status, 'PENDING')).toUpperCase(),
+    visibilityStatus: String(first(r.visibility_status, r.visibilityStatus, 'VISIBLE')).toUpperCase(),
+    latitude: first(r.latitude, r.lat),
+    longitude: first(r.longitude, r.lng),
+    upiId: first(r.upi_id, ''),
+    bankDetails: first(r.bank_details, ''),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+async function sellerOwnedRestaurant(user){
+  await ensure();
+  const userId = first(user?.id, user?.userId, user?.sub);
+  if(!userId) return null;
+  const rc = await cols('restaurants');
+  if(!rc.size) return null;
+  const ownerCol = rc.has('owner_id') ? 'owner_id' : (rc.has('seller_id') ? 'seller_id' : null);
+  let r = null;
+  if(ownerCol){
+    r = await one(`SELECT * FROM restaurants WHERE ${ownerCol}=? ORDER BY id DESC LIMIT 1`, [userId]);
+  }
+  if(!r){
+    const userRow = await one('SELECT * FROM users WHERE id=?', [userId]);
+    const baseName = first(userRow?.restaurant_name, userRow?.business_name, userRow?.name, user?.name, 'Seller Restaurant');
+    const data = {
+      owner_id: userId,
+      seller_id: userId,
+      name: baseName,
+      title: baseName,
+      slug: `${slugifyName(baseName)}-${userId}`,
+      address: first(userRow?.address, ''),
+      phone: first(userRow?.mobile, userRow?.phone_number, user?.mobile, ''),
+      mobile: first(userRow?.mobile, userRow?.phone_number, user?.mobile, ''),
+      email: first(userRow?.email, user?.email, ''),
+      verification_status: 'PENDING',
+      visibility_status: 'VISIBLE',
+      status: 'ACTIVE',
+      is_open: 0,
+      open: 0,
+      active: 1,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const id = await insertDynamic('restaurants', data);
+    if(id) r = await one('SELECT * FROM restaurants WHERE id=?', [id]);
+  }
+  return normalizeRestaurantRow(r);
+}
+
+router.get(['/seller/restaurant','/seller/restaurants/me','/seller/me/restaurant'], requireAuth, ah(async(req,res)=>{
+  const restaurant = await sellerOwnedRestaurant(req.user);
+  if(!restaurant) return fail(res, 'Seller restaurant not found', 404);
+  ok(res, restaurant, 'Seller restaurant loaded');
+}));
+
+router.put(['/seller/restaurant','/seller/restaurants/me','/seller/me/restaurant'], requireAuth, upload.any(), ah(async(req,res)=>{
+  const restaurant = await sellerOwnedRestaurant(req.user);
+  if(!restaurant?.id) return fail(res, 'Seller restaurant not found', 404);
+  const b = req.body || {};
+  await updateDynamic('restaurants', restaurant.id, {
+    name: first(b.name, b.restaurantName, b.restaurant_name),
+    title: first(b.title, b.name, b.restaurantName, b.restaurant_name),
+    description: b.description,
+    address: first(b.address, b.businessAddress, b.restaurantAddress),
+    city: b.city,
+    state: b.state,
+    pincode: b.pincode,
+    latitude: first(b.latitude, b.lat),
+    longitude: first(b.longitude, b.lng),
+    phone: first(b.phone, b.mobile, b.phoneNumber),
+    mobile: first(b.mobile, b.phone, b.phoneNumber),
+    email: b.email,
+    gstin: first(b.gstin, b.gstNumber, b.gstinNumber),
+    pan: first(b.pan, b.panNumber),
+    fssai: first(b.fssai, b.fssaiNumber),
+    upi_id: first(b.upiId, b.upi_id),
+    bank_details: first(b.bankDetails, b.bank_details),
+    updated_at: new Date(),
+  });
+  ok(res, await sellerOwnedRestaurant(req.user), 'Seller restaurant updated');
+}));
+
+router.patch(['/seller/restaurant/status','/seller/restaurants/me/status'], requireAuth, ah(async(req,res)=>{
+  const restaurant = await sellerOwnedRestaurant(req.user);
+  if(!restaurant?.id) return fail(res, 'Seller restaurant not found', 404);
+  const open = bool(first(req.body?.open, req.body?.isOpen, req.body?.is_open, req.body?.status === 'OPEN'), false);
+  await updateDynamic('restaurants', restaurant.id, { is_open: open ? 1 : 0, open: open ? 1 : 0, updated_at: new Date() });
+  ok(res, { ...restaurant, isOpen: open, open }, open ? 'Restaurant opened' : 'Restaurant closed');
+}));
+
 async function restaurantsUnderMrBreado(){ const rows=await query(`SELECT r.*, COALESCE(SUM(CASE WHEN o.status IN ('DELIVERED','COMPLETED') THEN COALESCE(o.grand_total,o.total_amount,0) ELSE 0 END),0) gross_sales, COUNT(DISTINCT o.id) total_orders, COUNT(DISTINCT p.id) total_products FROM restaurants r LEFT JOIN orders o ON o.restaurant_id=r.id LEFT JOIN products p ON p.restaurant_id=r.id WHERE LOWER(COALESCE(r.name,'')) LIKE '%mr breado%' OR LOWER(COALESCE(r.name,'')) LIKE '%mr_breado%' OR LOWER(COALESCE(r.parent_brand,'')) LIKE '%mr breado%' OR LOWER(COALESCE(r.outlet_type,'')) LIKE '%franchise%' GROUP BY r.id ORDER BY r.id DESC LIMIT 300`); return rows.map(r=>({...r, name:r.name, city:first(r.city,r.address,''), grossSales:n(r.gross_sales), totalOrders:n(r.total_orders), totalProducts:n(r.total_products), verificationStatus:first(r.verification_status,r.verificationStatus,'UNVERIFIED'), payoutAlertStatus:first(r.payout_alert_status,'ACTIVE'), upiId:r.upi_id})); }
 router.post(['/seller/franchise/requests','/franchise/requests','/auth/franchise-request','/seller/outlet/request'], ah(async(req,res)=>{ await ensure(); const b=req.body||{}; const owner=s(first(b.ownerName,b.owner_name,b.name,b.fullName,b.owner)); const phone=s(first(b.phone,b.mobile,b.mobileNumber,b.phoneNumber)); if(!owner||!phone) return fail(res,'Owner name and phone are required',400); const id=await insertDynamic('franchise_requests',{ owner_name:owner, phone, email:s(first(b.email,b.emailAddress)), business_name:s(first(b.businessName,b.business_name,b.restaurantName,b.outletName,'Mr Breado Outlet')), address:s(first(b.address,b.location,b.restaurantAddress)), city:s(b.city), state:s(b.state), pincode:s(b.pincode), latitude:first(b.latitude,b.lat,null), longitude:first(b.longitude,b.lng,b.long,null), query:s(first(b.query,b.message,b.note,b.businessPlan)), investment_budget:n(first(b.investmentBudget,b.investment_budget,b.budget),0)||null, preferred_contact_method:s(first(b.preferredContactMethod,b.preferred_contact_method,'PHONE')), status:'PENDING', created_at:new Date(), updated_at:new Date() }); ok(res,{id,status:'PENDING'},'Franchise request submitted',201); }));
 router.get(['/admin/franchise-requests','/admin/outlets/franchise-requests','/admin/franchise/leads'], ah(async(req,res)=>{ await ensure(); const rows=await query(`SELECT * FROM franchise_requests ORDER BY FIELD(status,'PENDING','CONTACTED','APPROVED','REJECTED'), id DESC LIMIT 500`); ok(res,page(rows.map(normFranchise),req),'Franchise requests loaded'); }));
