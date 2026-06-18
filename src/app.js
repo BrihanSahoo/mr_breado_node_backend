@@ -1,5 +1,5 @@
-const express=require('express'); const cors=require('cors'); const helmet=require('helmet'); const compression=require('compression'); const rateLimit=require('express-rate-limit'); const {apiPrefix,corsOrigin,limits}=require('./config/env'); const error=require('./middleware/error'); const payment=require('./services/paymentService'); const {ok}=require('./utils/respond'); const ah=require('./utils/asyncHandler');
-const app=express(); app.disable('x-powered-by'); app.use(helmet()); app.use(cors({origin:corsOrigin==='*'?true:corsOrigin,credentials:true})); app.use(compression()); app.use(express.json({limit:limits.json})); app.use(express.urlencoded({extended:true,limit:limits.json})); app.use(rateLimit({windowMs:60_000,limit:600,standardHeaders:true,legacyHeaders:false}));
+const express=require('express'); const cors=require('cors'); const helmet=require('helmet'); const compression=require('compression'); const rateLimit=require('express-rate-limit'); const {apiPrefix,corsOrigin,limits}=require('./config/env'); const error=require('./middleware/error'); const payment=require('./services/paymentService'); const {ok}=require('./utils/respond'); const ah=require('./utils/asyncHandler'); const {requireAuth}=require('./middleware/auth'); const requestContext=require('./middleware/requestContext'); const applyPathAccess=require('./middleware/pathAccess');
+const app=express(); app.disable('x-powered-by'); app.use(requestContext); app.use(helmet()); app.use(cors({origin:corsOrigin==='*'?true:corsOrigin,credentials:true})); app.use(compression()); app.use(express.json({limit:limits.json})); app.use(express.urlencoded({extended:true,limit:limits.json})); app.use(rateLimit({windowMs:60_000,limit:600,standardHeaders:true,legacyHeaders:false}));
 app.get('/',(req,res)=>res.json({success:true,message:'Mr Breado Node backend running',apiPrefix,version:'v22-razorpay-locked-v26'}));
 app.get(`${apiPrefix}/health`,(req,res)=>res.json({success:true,message:'OK',version:'v22-razorpay-locked-v26',time:new Date().toISOString()}));
 app.get(`${apiPrefix}/version`,(req,res)=>res.json({success:true,version:'single-brand-enterprise-v62',paymentCreateOrder:'public-direct-route-null-safe',featureUpgrade:'v59-outlet-order-routing-audit' ,realData:'enabled',commerce:'single-brand-outlet-dashboard-categories-nearest-menu-fix',razorpay:'v22-locked-unchanged'}));
@@ -24,20 +24,18 @@ const razorpayVerifyPaths = new Set([
   `${apiPrefix}/checkout/razorpay/verify`,
   `${apiPrefix}/checkout/payment/verify`,
 ]);
-app.post(Array.from(razorpayCreatePaths), ah(async (req, res) => {
+app.post(Array.from(razorpayCreatePaths), requireAuth, ah(async (req, res) => {
   const body = req.body || {};
   const data = await payment.createOrder({
-    amount: body.amount || body.amountRupees || body.total || body.payableAmount,
-    amountInPaise: body.amountInPaise || body.amount_in_paise,
     orderId: body.orderId || body.appOrderId,
-    userId: body.userId || body.user_id || null,
+    userId: req.user.id,
     restaurantId: body.restaurantId || body.restaurant_id || null,
     sellerId: body.sellerId || body.seller_id || null,
     currency: body.currency || 'INR',
   });
   ok(res, data, 'Payment order created');
 }));
-app.post(Array.from(razorpayVerifyPaths), ah(async (req, res) => ok(res, await payment.verify(req.body || {}, {}), 'Payment verified')));
+app.post(Array.from(razorpayVerifyPaths), requireAuth, ah(async (req, res) => ok(res, await payment.verify(req.body || {}, req.user), 'Payment verified')));
 
 // DIRECT PUBLIC AUTH OVERRIDE: must stay before all routers and before any middleware that could require auth.
 // This guarantees seller/admin Flutter app can always login through /api/auth/login or /api/admin/login.
@@ -50,6 +48,11 @@ app.post([`${apiPrefix}/auth/register`, `${apiPrefix}/register`], ah(async (req,
   const result = await authService.register(req.body || {});
   ok(res, result, 'Registered successfully', 201);
 }));
+
+applyPathAccess(app, apiPrefix);
+
+// Canonical security-sensitive routes are mounted before legacy compatibility routers.
+app.use(apiPrefix, require('./routes/canonicalCore'));
 
 const routers=[require('./routes/singleBrandEnterpriseV62'),require('./routes/singleBrandEnterpriseV61'),require('./routes/singleBrandEnterpriseV60'),require('./routes/singleBrandEnterpriseV59'),require('./routes/singleBrandEnterpriseV53'),require('./routes/singleBrandEnterpriseV52'),require('./routes/singleBrandEnterpriseV50'),require('./routes/singleBrandEnterpriseV49'),require('./routes/singleBrandEnterpriseV43'),require('./routes/singleBrandEnterpriseV42'),require('./routes/singleBrandEnterpriseV41'),require('./routes/singleBrandEnterpriseV40'),require('./routes/singleBrandCompleteV39'),require('./routes/singleBrandOutletV38'),require('./routes/franchisePayoutFoodApprovalV36'),require('./routes/swiggyMoneyFlowV35'),require('./routes/franchiseOutletV34'),require('./routes/verificationFoodAdminV33'),require('./routes/premiumReceiptsInvoicesV30'),require('./routes/orderReviewV30'),require('./routes/verificationRidersV32'),require('./routes/verificationAdminV31'),require('./routes/practicalAdminSellerV23'),require('./routes/realSpringFlowV22'),require('./routes/sellerAdminOrdersV19'),require('./routes/commerceV18'),require('./routes/commerceV17'),require('./routes/realDataV16'),require('./routes/featureUpgrade'),require('./routes/auth'),require('./routes/public'),require('./routes/cartOrders'),require('./routes/operations'),require('./routes/admin'),require('./routes/misc'),require('./routes/springCompatibility'),require('./routes/appEndpointCompatibility')]; routers.forEach(r=>app.use(apiPrefix,r));
 app.use((req,res)=>res.status(404).json({success:false,message:'Endpoint not found',path:req.originalUrl,version:'v22-razorpay-locked-v26'})); app.use(error); module.exports=app;

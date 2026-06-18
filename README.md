@@ -47,3 +47,21 @@ V10: payment create-order direct public route before auth routers.
 
 
 V11: payment_transactions user_id/order_id null-safe for existing Spring DB schemas.
+
+## Production hardening commands
+
+```bash
+npm ci
+npm run check:syntax
+npm test
+npm run migrate
+npm start
+```
+
+Run automatic cancellation from exactly one external scheduler/worker:
+
+```bash
+npm run jobs:auto-cancel
+```
+
+Do not enable `ENABLE_IN_PROCESS_AUTOCANCEL` on a horizontally scaled deployment. Payment creation now requires authentication and derives its amount from the authenticated user's persisted order or cart; client amount fields are intentionally ignored.

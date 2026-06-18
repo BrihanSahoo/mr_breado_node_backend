@@ -21,7 +21,11 @@ function numberValue(value, fallback = 0) {
 }
 
 function encryptionKey() {
-  return crypto.createHash('sha256').update(String(jwtSecret || 'mr-breado-dev-secret')).digest();
+  const configured = process.env.SETTINGS_ENCRYPTION_KEY;
+  if (process.env.NODE_ENV === 'production' && (!configured || configured.length < 32)) {
+    throw Object.assign(new Error('SETTINGS_ENCRYPTION_KEY must be at least 32 characters in production'), { status: 500 });
+  }
+  return crypto.createHash('sha256').update(String(configured || jwtSecret || 'mr-breado-dev-secret')).digest();
 }
 
 function encryptSecret(secret) {

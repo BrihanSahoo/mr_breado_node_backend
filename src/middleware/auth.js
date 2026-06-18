@@ -4,8 +4,8 @@ const { jwtSecret } = require('../config/env');
 function normalizeRole(role) {
   const raw = String(role || '').trim().toUpperCase();
   if (raw === 'CUSTOMER') return 'USER';
-  if (raw === 'DELIVERY_PARTNER') return 'RIDER';
-  if (raw === 'DRIVER') return 'RIDER';
+  if (['DELIVERY_PARTNER','DRIVER','DELIVERY','DELIVERY_BOY'].includes(raw)) return 'RIDER';
+  if (['OWNER','RESTAURANT_OWNER','RESTAURANT','MERCHANT'].includes(raw)) return 'SELLER';
   return raw || 'USER';
 }
 
@@ -29,7 +29,7 @@ function extractToken(req) {
     req.headers['x-auth-token'] ||
     req.headers['x-access-token'] ||
     req.headers.token ||
-    req.query.token ||
+    (process.env.ALLOW_QUERY_AUTH_TOKEN === 'true' ? req.query.token : null) ||
     null
   );
 }

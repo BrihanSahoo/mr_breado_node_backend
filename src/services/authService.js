@@ -72,11 +72,16 @@ async function login(body){
   // Production-safe bootstrap: if the database has no ADMIN account yet, allow the first
   // admin login attempt to create the admin account. This avoids the seller/admin app
   // getting stuck with "Authentication required" when the legacy Spring seed user is missing.
-  if(!u && String(ident||'').trim().toLowerCase()==='admin@admin.com') {
+  if(!u && String(ident||'').trim().toLowerCase()==='admin@admin.com' && String(process.env.ALLOW_ADMIN_BOOTSTRAP||'').toLowerCase()==='true') {
+    const suppliedBootstrapToken = String(body.bootstrapToken || body.bootstrap_token || '');
+    const expectedBootstrapToken = String(process.env.ADMIN_BOOTSTRAP_TOKEN || '');
+    if (!expectedBootstrapToken || suppliedBootstrapToken !== expectedBootstrapToken) {
+      throw Object.assign(new Error('Admin bootstrap is not authorized'), {status:403});
+    }
     const adminCountRow = await one("SELECT COUNT(*) AS total FROM users WHERE UPPER(role)='ADMIN' AND COALESCE(deleted,0)=0",{});
     const adminCount = Number(adminCountRow?.total || 0);
-    if(adminCount === 0 && String(password||'').trim().length >= 4) {
-      const hash = await bcrypt.hash(password,10);
+    if(adminCount === 0 && String(password||'').trim().length >= 12) {
+      const hash = await bcrypt.hash(password,12);
       const r = await exec("INSERT INTO users(name,email,mobile,phone_number,password,password_hash,role,enabled,blocked,deleted,country,iso2,loyalty_points,total_orders,total_reviews,wallet_balance,email_change_used,created_at) VALUES('Mr Breado Admin','admin@admin.com','9999999999','9999999999',:hash,:hash,'ADMIN',1,0,0,'India','IN',0,0,0,0,0,NOW())",{hash});
       u = await one('SELECT * FROM users WHERE id=:id',{id:r.insertId});
     }

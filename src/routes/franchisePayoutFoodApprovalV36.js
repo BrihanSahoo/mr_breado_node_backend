@@ -61,7 +61,7 @@ async function ensure(){
  const rc=await cols('restaurants'); if(rc.size){ const adds=[]; if(!rc.has('payout_alert_status')) adds.push('ADD COLUMN payout_alert_status VARCHAR(40) NULL DEFAULT \'ACTIVE\''); if(!rc.has('last_payout_at')) adds.push('ADD COLUMN last_payout_at DATETIME(6) NULL'); if(!rc.has('upi_id')) adds.push('ADD COLUMN upi_id VARCHAR(255) NULL'); if(!rc.has('bank_details')) adds.push('ADD COLUMN bank_details TEXT NULL'); if(adds.length) { await exec(`ALTER TABLE restaurants ${adds.join(', ')}`); cache.delete('restaurants'); } }
  const pc=await cols('products'); if(pc.size){ const adds=[]; if(!pc.has('approval_status')) adds.push('ADD COLUMN approval_status VARCHAR(40) NULL DEFAULT \'APPROVED\''); if(!pc.has('admin_approved')) adds.push('ADD COLUMN admin_approved BIT(1) NOT NULL DEFAULT b\'1\''); if(adds.length){ await exec(`ALTER TABLE products ${adds.join(', ')}`); cache.delete('products'); } }
 }
-ensure().catch(e=>console.error('[v36-init]',e.message));
+if (String(process.env.RUN_LEGACY_SCHEMA_BOOTSTRAP||'').toLowerCase()==='true') ensure().catch(e=>console.error('[v36-init]',e.message));
 function normFranchise(x){ return { ...x, id:x.id, ownerName:x.owner_name, businessName:x.business_name, investmentBudget:n(x.investment_budget), preferredContactMethod:x.preferred_contact_method, adminNote:x.admin_note, approvedRestaurantId:x.approved_restaurant_id, createdAt:x.created_at, updatedAt:x.updated_at }; }
 
 // -----------------------------------------------------------------------------

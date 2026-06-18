@@ -37,7 +37,7 @@ async function ensurePayoutColumns(){
     if(adds.length){ await run(`ALTER TABLE \`${t}\` ${adds.join(', ')}`); cache.delete(t); }
   }
 }
-ensurePayoutColumns().catch(()=>{});
+if (String(process.env.RUN_LEGACY_SCHEMA_BOOTSTRAP||'').toLowerCase()==='true') ensurePayoutColumns().catch(()=>{});
 
 async function docsFor(req, source, id){
   if(source==='native' && await exists('verification_documents')){

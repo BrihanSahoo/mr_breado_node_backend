@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const { one, exec } = require('../utils/db');
 const paymentSettings = require('./paymentSettingsService');
+const { resolveAuthoritativeAmount } = require('./paymentAmountService');
 
 function safeEqualHex(a, b) {
   if (!a || !b) return false;
@@ -36,19 +37,11 @@ async function clientFromSettings() {
 }
 
 
-async function ensurePaymentTransactionsNullable() {
-  try {
-    await exec('ALTER TABLE payment_transactions MODIFY COLUMN user_id BIGINT NULL');
-  } catch (_) {}
-  try {
-    await exec('ALTER TABLE payment_transactions MODIFY COLUMN order_id BIGINT NULL');
-  } catch (_) {}
-}
-
-async function createOrder({ amount, amountInPaise, orderId, userId, currency = 'INR', restaurantId = null, sellerId = null }) {
-  await ensurePaymentTransactionsNullable();
-  const amountRupees = normalizeAmount(amount || (amountInPaise ? Number(amountInPaise) / 100 : 0));
-  if (amountRupees <= 0) throw Object.assign(new Error('Amount must be greater than zero'), { status: 400 });
+async function createOrder({ orderId, userId, currency = 'INR', restaurantId = null, sellerId = null }) {
+  const authoritative = await resolveAuthoritativeAmount({ orderId, userId });
+  const amountRupees = authoritative.amount;
+  orderId = authoritative.orderId || orderId || null;
+  restaurantId = authoritative.outletId || restaurantId || null;
 
   const { client, settings } = await clientFromSettings();
   if (!settings.onlineEnabled || !client) {
@@ -75,22 +68,12 @@ async function createOrder({ amount, amountInPaise, orderId, userId, currency = 
 
     const providerOrderId = o.id;
     const internalOrderId = orderId && /^\d+$/.test(String(orderId)) ? Number(orderId) : null;
-    let r = { insertId: null };
-    try {
-      r = await exec(
-        `INSERT INTO payment_transactions
-         (order_id,user_id,provider,provider_order_id,amount,currency,status,provider_response,created_at,updated_at)
-         VALUES (:orderId,:userId,'RAZORPAY',:providerOrderId,:amount,:currency,'CREATED',:raw,NOW(6),NOW(6))`,
-        { orderId: internalOrderId, userId: userId || null, providerOrderId, amount: amountRupees, currency, raw: JSON.stringify(o) }
-      );
-    } catch (insertError) {
-      // Some existing Spring tables were created with user_id NOT NULL. Do not block Razorpay checkout
-      // after Razorpay order is successfully created. Verification/order placement can attach the tx later.
-      await paymentSettings.audit('PAYMENT_TRANSACTION_CREATE_SKIPPED', {
-        userId, orderId: internalOrderId, restaurantId, sellerId, providerOrderId,
-        amount: amountRupees, status: 'CREATED', message: insertError.message, raw: o,
-      });
-    }
+    const r = await exec(
+      `INSERT INTO payment_transactions
+       (order_id,user_id,provider,provider_order_id,amount,currency,status,provider_response,created_at,updated_at)
+       VALUES (:orderId,:userId,'RAZORPAY',:providerOrderId,:amount,:currency,'CREATED',:raw,NOW(6),NOW(6))`,
+      { orderId: internalOrderId, userId, providerOrderId, amount: amountRupees, currency, raw: JSON.stringify(o) }
+    );
 
     await paymentSettings.audit('RAZORPAY_ORDER_CREATED', {
       userId,
@@ -143,13 +126,16 @@ async function createOrder({ amount, amountInPaise, orderId, userId, currency = 
 }
 
 async function verify(body, authUser = {}) {
-  await ensurePaymentTransactionsNullable();
   const providerOrderId = body.razorpay_order_id || body.razorpayOrderId || body.providerOrderId || body.provider_order_id || body.orderId;
   const paymentId = body.razorpay_payment_id || body.razorpayPaymentId || body.providerPaymentId || body.provider_payment_id || body.paymentId;
   const signature = body.razorpay_signature || body.razorpaySignature || body.providerSignature || body.provider_signature || body.signature;
   if (!providerOrderId || !paymentId || !signature) throw Object.assign(new Error('Payment verification fields are required'), { status: 400 });
 
   const txBefore = await one('SELECT * FROM payment_transactions WHERE provider_order_id=:providerOrderId', { providerOrderId });
+  if (!txBefore) throw Object.assign(new Error('Unknown payment order'), { status: 404 });
+  if (!authUser.id || (txBefore.user_id && Number(txBefore.user_id) !== Number(authUser.id))) {
+    throw Object.assign(new Error('Payment does not belong to the authenticated customer'), { status: 403 });
+  }
   const { settings } = await clientFromSettings();
   if (!settings.configured) throw Object.assign(new Error('Razorpay is not configured by admin.'), { status: 503 });
 
@@ -162,7 +148,7 @@ async function verify(body, authUser = {}) {
       { paymentId, signature, raw: JSON.stringify(body), providerOrderId }
     );
     await paymentSettings.audit('RAZORPAY_SIGNATURE_INVALID', {
-      userId: authUser.id || body.userId || txBefore?.user_id,
+      userId: authUser.id || txBefore?.user_id,
       orderId: txBefore?.order_id || body.internalOrderId || body.appOrderId,
       paymentTransactionId: txBefore?.id,
       providerOrderId,
@@ -182,19 +168,9 @@ async function verify(body, authUser = {}) {
     { paymentId, signature, raw: JSON.stringify(body), providerOrderId }
   );
 
-  let tx = await one('SELECT * FROM payment_transactions WHERE provider_order_id=:providerOrderId', { providerOrderId });
-  if (!tx) {
-    const amount = Number(body.amount || body.amountRupees || 0);
-    const r = await exec(
-      `INSERT INTO payment_transactions
-       (user_id,provider,provider_order_id,provider_payment_id,provider_signature,amount,currency,status,paid_at,provider_response,created_at,updated_at)
-       VALUES(:userId,'RAZORPAY',:providerOrderId,:paymentId,:signature,:amount,:currency,'SUCCESS',NOW(6),:raw,NOW(6),NOW(6))`,
-      { userId: authUser.id || body.userId || null, providerOrderId, paymentId, signature, amount, currency: body.currency || 'INR', raw: JSON.stringify(body) }
-    );
-    tx = await one('SELECT * FROM payment_transactions WHERE id=:id', { id: r.insertId });
-  }
+  const tx = await one('SELECT * FROM payment_transactions WHERE provider_order_id=:providerOrderId', { providerOrderId });
 
-  const internalOrderId = tx?.order_id || body.internalOrderId || body.appOrderId || (/^\d+$/.test(String(body.appOrderId || '')) ? Number(body.appOrderId) : null);
+  const internalOrderId = tx?.order_id || null;
   if (internalOrderId) {
     await exec(
       `UPDATE orders SET payment_status='PAID', status=CASE WHEN status='PENDING' THEN 'PLACED' ELSE status END,
@@ -205,7 +181,7 @@ async function verify(body, authUser = {}) {
   }
 
   await paymentSettings.audit('RAZORPAY_PAYMENT_VERIFIED', {
-    userId: authUser.id || body.userId || tx?.user_id,
+    userId: authUser.id || tx?.user_id,
     orderId: internalOrderId || tx?.order_id,
     paymentTransactionId: tx?.id,
     providerOrderId,

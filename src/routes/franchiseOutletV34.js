@@ -65,7 +65,7 @@ async function init(){
   if(adds.length){ await run(`ALTER TABLE restaurants ${adds.join(', ')}`); cache.delete('restaurants'); }
  }
 }
-init().catch(e=>console.error('[franchise-v34-init]',e.message));
+if (String(process.env.RUN_LEGACY_SCHEMA_BOOTSTRAP||'').toLowerCase()==='true') init().catch(e=>console.error('[franchise-v34-init]',e.message));
 
 async function products(){
  const pc=await cols('products'); if(!pc.size) return [];

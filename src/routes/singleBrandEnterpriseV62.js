@@ -307,11 +307,13 @@ async function cancelExpiredOrders() {
     await ex(`INSERT INTO outlet_order_events(outlet_id,order_id,event_type,event_note,actor_role) VALUES(:outletId,:orderId,'AUTO_CANCELLED',:reason,'SYSTEM')`, { outletId: n(o.outletId), orderId: o.id, reason });
   }
 }
-if (!global.__mrBreadoV62AutoCancelStarted) {
+if (String(process.env.ENABLE_IN_PROCESS_AUTOCANCEL||'').toLowerCase()==='true' && !global.__mrBreadoV62AutoCancelStarted) {
   global.__mrBreadoV62AutoCancelStarted = true;
+  console.warn('[v62 autocancel] in-process mode enabled; use only on a single-instance deployment');
   setTimeout(() => cancelExpiredOrders().catch(e => console.error('[v62 autocancel first]', e.message)), 15000);
   setInterval(() => cancelExpiredOrders().catch(e => console.error('[v62 autocancel]', e.message)), 60000).unref();
 }
+router.cancelExpiredOrders = cancelExpiredOrders;
 
 router.get('/single-brand/v62/version', (req,res) => ok(res, { version:'single-brand-enterprise-v62', focus:'outlet-order-routing-distance-invoice-autocancel', razorpay:'v22/v26 unchanged' }, 'v62 active'));
 router.post('/admin/outlets/ensure-enterprise-v62-schema', ah(async(req,res)=>{ await ensureSchema(); ok(res,{ready:true},'v62 schema ready'); }));
