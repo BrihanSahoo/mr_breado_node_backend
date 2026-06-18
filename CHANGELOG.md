@@ -15,3 +15,9 @@
 - Added seller/outlet assignment authorization foundation.
 - Added production encryption-key enforcement and query-token hardening.
 - Added migration 002 and focused tests.
+
+## 2026-06-18 — Category and outlet inventory correction
+- Added canonical authenticated category CRUD before historical route versions.
+- Added multipart category image handling and LONGTEXT migration for category images.
+- Added canonical outlet inventory list/update endpoints with transaction-safe stock updates.
+- Added canonical outlet full-dashboard response containing all assigned foods and current stock.
